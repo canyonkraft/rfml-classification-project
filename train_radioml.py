@@ -1,14 +1,9 @@
 """
 RadioML RML2016.10a - AMC (Automatic Modulation Classification) Training Script
-Dataset: https://www.deepsig.ai/datasets
-Architecture: CNN with BatchNorm (similar to the original DeepSig paper)
+Dataset: https://www.deepsig.ai/datasets (can't download here though)
+Download dataset through Kaggle
+Architecture: CNN with BatchNorm
 Split: 60% train / 20% validation / 20% test
-
-Fixes vs v1:
-  - Input normalization (zero-mean, unit-variance per channel across training set)
-  - BatchNorm1d after every Conv layer → stable gradients
-  - Lower initial LR (1e-3 → 5e-4) for smoother convergence
-  - zero_division=0 in classification_report to suppress sklearn warnings
 """
 
 import os
@@ -20,14 +15,11 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib
-matplotlib.use("Agg")          # non-interactive backend — no plt.show() warnings
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ─────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────
-DATASET_PATH = "RML2016.10a_dict.pkl"   # Path to the .pkl file
+DATASET_PATH = "RML2016.10a_dict.pkl" 
 BATCH_SIZE   = 256
 EPOCHS       = 30
 LR           = 5e-4
@@ -38,18 +30,11 @@ SAVE_PATH    = "radioml_cnn.pth"
 torch.manual_seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 
-# ─────────────────────────────────────────────
-# Dataset
-# ─────────────────────────────────────────────
 class RadioMLDataset(Dataset):
     """
     Loads RML2016.10a from its original pickle format.
-
-    The pickle is a dict keyed by (modulation_str, snr_int).
     Each value is an ndarray of shape (N, 2, 128) — I/Q samples.
-
-    Normalization is applied after the train split is known (call
-    fit_normalize() on the train subset, then apply_normalize() on all splits).
+    Normalization is applied after the train split is known
     """
 
     def __init__(self, pkl_path: str, snr_min: int = -20, snr_max: int = 18):
@@ -63,13 +48,11 @@ class RadioMLDataset(Dataset):
         xs, ys = [], []
         for (mod, snr), samples in data.items():
             if snr_min <= snr <= snr_max:
-                xs.append(samples.astype(np.float32))   # (N, 2, 128)
+                xs.append(samples.astype(np.float32))
                 ys.extend([self.label_map[mod]] * len(samples))
 
-        self.X = np.concatenate(xs, axis=0)             # (total, 2, 128)
+        self.X = np.concatenate(xs, axis=0)
         self.Y = np.array(ys, dtype=np.int64)
-
-        # Normalization stats — set by fit_normalize()
         self.mean = np.zeros((2, 1), dtype=np.float32)
         self.std  = np.ones ((2, 1), dtype=np.float32)
 
@@ -78,9 +61,9 @@ class RadioMLDataset(Dataset):
 
     def fit_normalize(self, indices):
         """Compute mean/std from training indices only (no data leakage)."""
-        subset = self.X[indices]                           # (n_train, 2, 128)
+        subset = self.X[indices]                      
         # mean/std over samples and time, per I/Q channel
-        self.mean = subset.mean(axis=(0, 2), keepdims=True)[0]   # (2, 1)
+        self.mean = subset.mean(axis=(0, 2), keepdims=True)[0]
         self.std  = subset.std (axis=(0, 2), keepdims=True)[0]
         self.std  = np.where(self.std < 1e-8, 1.0, self.std)
         print(f"Normalization  mean={self.mean.ravel()}  std={self.std.ravel()}")
@@ -89,7 +72,7 @@ class RadioMLDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
-        x = (self.X[idx] - self.mean) / self.std   # (2, 128)
+        x = (self.X[idx] - self.mean) / self.std 
         return torch.tensor(x), torch.tensor(self.Y[idx])
 
 
@@ -108,17 +91,13 @@ def split_dataset(dataset, train=0.6, val=0.2, test=0.2):
     return splits
 
 
-# ─────────────────────────────────────────────
-# Model — VT-CNN2 + BatchNorm
-# ─────────────────────────────────────────────
+#Model
 class RadioMLCNN(nn.Module):
     """
-    Based on: O'Shea & Hoydis (2017).
     Input:  (batch, 2, 128)
     Output: (batch, num_classes)
 
-    BatchNorm1d after each Conv stabilises training and dramatically
-    speeds up convergence compared to the plain ReLU-only version.
+    BatchNorm1d after each Conv stabilises training, speeds up convergence
     """
 
     def __init__(self, num_classes: int):
@@ -135,17 +114,17 @@ class RadioMLCNN(nn.Module):
             # Block 1
             conv_bn_relu(2,   64),
             conv_bn_relu(64,  64),
-            nn.MaxPool1d(2),          # → (64, 64)
+            nn.MaxPool1d(2),
 
             # Block 2
             conv_bn_relu(64,  128),
             conv_bn_relu(128, 128),
-            nn.MaxPool1d(2),          # → (128, 32)
+            nn.MaxPool1d(2),
 
             # Block 3
             conv_bn_relu(128, 128),
             conv_bn_relu(128, 128),
-            nn.MaxPool1d(2),          # → (128, 16)
+            nn.MaxPool1d(2), 
         )
 
         self.classifier = nn.Sequential(
@@ -163,9 +142,7 @@ class RadioMLCNN(nn.Module):
         return self.classifier(self.features(x))
 
 
-# ─────────────────────────────────────────────
-# Training helpers
-# ─────────────────────────────────────────────
+# training
 def train_epoch(model, loader, criterion, optimizer):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -196,9 +173,7 @@ def evaluate(model, loader, criterion):
     return total_loss / total, correct / total
 
 
-# ─────────────────────────────────────────────
-# Plotting helpers
-# ─────────────────────────────────────────────
+# plot
 def plot_history(train_accs, val_accs, train_losses, val_losses):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     epochs = range(1, len(train_accs) + 1)
@@ -242,10 +217,6 @@ def plot_confusion(model, loader, class_names):
     print(classification_report(all_labels, all_preds,
                                 target_names=class_names, zero_division=0))
 
-
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
 def main():
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(
@@ -254,7 +225,6 @@ def main():
             "and set DATASET_PATH at the top of this script."
         )
 
-    # 1. Load & split
     dataset = RadioMLDataset(DATASET_PATH)
     train_ds, val_ds, test_ds = split_dataset(dataset)
     print(f"Split → train: {len(train_ds):,}  val: {len(val_ds):,}  test: {len(test_ds):,}")
@@ -266,7 +236,7 @@ def main():
     test_loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE, shuffle=False,
                               num_workers=4, pin_memory=True)
 
-    # 2. Model, loss, optimiser
+    # model and loss
     num_classes = len(dataset.class_names)
     model       = RadioMLCNN(num_classes).to(DEVICE)
     print(f"\nModel parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -275,7 +245,7 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    # 3. Training loop
+    # training loop
     best_val_acc = 0.0
     train_accs, val_accs, train_losses, val_losses = [], [], [], []
 
@@ -297,13 +267,13 @@ def main():
               f"train loss: {tr_loss:.4f}  acc: {tr_acc:.4f}  |  "
               f"val loss: {vl_loss:.4f}  acc: {vl_acc:.4f}{marker}")
 
-    # 4. Test evaluation
+    # eval
     print(f"\nLoading best checkpoint (val acc = {best_val_acc:.4f}) …")
     model.load_state_dict(torch.load(SAVE_PATH, map_location=DEVICE))
     te_loss, te_acc = evaluate(model, test_loader, criterion)
     print(f"Test loss: {te_loss:.4f}  |  Test accuracy: {te_acc:.4f}")
 
-    # 5. Plots
+    # plot
     plot_history(train_accs, val_accs, train_losses, val_losses)
     plot_confusion(model, test_loader, dataset.class_names)
 

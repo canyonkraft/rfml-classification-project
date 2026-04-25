@@ -21,7 +21,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ── must match train_radioml.py exactly ──────────────────────────────────────
 DATASET_PATH = "RML2016.10a_dict.pkl"
 SAVE_PATH    = "radioml_cnn.pth"
 BATCH_SIZE   = 512
@@ -29,10 +28,8 @@ RANDOM_SEED  = 42
 DEVICE       = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
-# ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── Dataset (SNR-aware version) ───────────────────────────────────────────────
 class RadioMLDatasetSNR(Dataset):
     """
     Same as RadioMLDataset but also returns the SNR label per sample,
@@ -84,8 +81,6 @@ def split_indices(n, train=0.6, val=0.2, seed=42):
     n_val   = int(n * val)
     return idx[:n_train], idx[n_train:n_train + n_val], idx[n_train + n_val:]
 
-
-# ── Model (must match train_radioml.py) ──────────────────────────────────────
 class RadioMLCNN(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
@@ -112,8 +107,6 @@ class RadioMLCNN(nn.Module):
     def forward(self, x):
         return self.classifier(self.features(x))
 
-
-# ── Inference ─────────────────────────────────────────────────────────────────
 @torch.no_grad()
 def run_inference(model, loader):
     """Returns (all_preds, all_labels, all_snrs) as numpy arrays."""
@@ -126,8 +119,6 @@ def run_inference(model, loader):
         snrs.extend(snr.numpy())
     return np.array(preds), np.array(labels), np.array(snrs)
 
-
-# ── Plots ─────────────────────────────────────────────────────────────────────
 def plot_snr_accuracy(snr_values, snr_accs, class_names, snr_class_accs):
     """Overall accuracy curve + per-class accuracy heatmap vs SNR."""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
@@ -172,8 +163,6 @@ def print_snr_table(snr_values, snr_accs, class_names, snr_class_accs):
         print(row)
     print("─" * len(header))
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Dataset not found: {DATASET_PATH}")
@@ -182,10 +171,7 @@ def main():
             f"Checkpoint not found: {SAVE_PATH}\n"
             "Run train_radioml.py first to generate it.")
 
-    # 1. Load dataset with SNR labels
     dataset = RadioMLDatasetSNR(DATASET_PATH)
-
-    # 2. Reproduce exact same split as training (same seed + order)
     train_idx, val_idx, test_idx = split_indices(len(dataset), seed=RANDOM_SEED)
     dataset.fit_normalize(train_idx)   # same normalization as training
 
@@ -193,19 +179,16 @@ def main():
     test_loader = DataLoader(test_subset, batch_size=BATCH_SIZE,
                              shuffle=False, num_workers=4, pin_memory=True)
 
-    # 3. Load model
     model = RadioMLCNN(len(dataset.class_names)).to(DEVICE)
     model.load_state_dict(torch.load(SAVE_PATH, map_location=DEVICE))
     print(f"Loaded checkpoint: {SAVE_PATH}")
 
-    # 4. Run inference on test set
     preds, labels, snrs = run_inference(model, test_loader)
     print(f"Test samples evaluated: {len(preds):,}")
 
-    # 5. Compute per-SNR stats
     snr_values    = sorted(dataset.snr_values)
     snr_accs      = []
-    snr_class_accs = {}   # snr → {class_idx → accuracy}
+    snr_class_accs = {}
 
     for snr in snr_values:
         mask = snrs == snr
@@ -221,13 +204,8 @@ def main():
                 per_class[c] = ((preds[mask] == c) & cm).sum() / cm.sum()
         snr_class_accs[snr] = per_class
 
-    # 6. Print table
     print_snr_table(snr_values, snr_accs, dataset.class_names, snr_class_accs)
-
-    # 7. Plot
     plot_snr_accuracy(snr_values, snr_accs, dataset.class_names, snr_class_accs)
-
-    # 8. Overall classification report
     print("\nOverall Classification Report (all SNRs):")
     print(classification_report(labels, preds,
                                 target_names=dataset.class_names,

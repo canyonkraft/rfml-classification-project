@@ -5,24 +5,15 @@ Stage 1: Train on low-SNR samples only (default: SNR <= 0dB)
 Stage 2: Evaluate the trained model across ALL SNR levels to
          visualise how well low-SNR knowledge generalises upward.
 
-This is the counterpart to train_highsnr.py. The key comparison:
-  - train_highsnr.py asks "does learning on clean signals transfer to noisy?"
-  - train_lowsnr.py  asks "does learning on noisy signals transfer to clean?"
-
-Intuition: training on noisy data is harder but forces the model to learn
-more robust, generalizable features. It may actually generalise UPWARD to
-high-SNR better than a high-SNR model generalises DOWNWARD to low-SNR.
-
 Outputs:
-  - lowsnr_cnn.pth                best checkpoint
-  - lowsnr_training_history.png   loss / accuracy curves
-  - lowsnr_snr_accuracy.png       accuracy-vs-SNR curve + per-class heatmap
-  - lowsnr_confusion.png          confusion matrix (low-SNR test split only)
+  - lowsnr_cnn.pth 
+  - lowsnr_training_history.png 
+  - lowsnr_snr_accuracy.png 
+  - lowsnr_confusion.png
 
 Usage:
   python3 train_lowsnr.py
   python3 train_lowsnr.py --snr_threshold -4    # only train on SNR <= -4 dB
-  python3 train_lowsnr.py --snr_threshold 4     # more inclusive (up to +4 dB)
 """
 
 import os
@@ -39,9 +30,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ─────────────────────────────────────────────
-# CLI args
-# ─────────────────────────────────────────────
 parser = argparse.ArgumentParser()
 parser.add_argument("--snr_threshold", type=int, default=0,
                     help="Train only on SNR <= this value (dB). Default: 0")
@@ -67,9 +55,7 @@ np.random.seed(RANDOM_SEED)
 print(f"Training on SNR <= {SNR_THRESHOLD} dB  |  device: {DEVICE}")
 
 
-# ─────────────────────────────────────────────
-# Dataset
-# ─────────────────────────────────────────────
+#Dataset
 class RadioMLDatasetSNR(Dataset):
     """
     Full dataset with SNR labels retained per sample.
@@ -92,7 +78,7 @@ class RadioMLDatasetSNR(Dataset):
             ys.extend([self.label_map[mod]] * n)
             snrs.extend([snr] * n)
 
-        self.X   = np.concatenate(xs, axis=0)          # (220000, 2, 128)
+        self.X   = np.concatenate(xs, axis=0)
         self.Y   = np.array(ys,   dtype=np.int64)
         self.SNR = np.array(snrs, dtype=np.int32)
 
@@ -107,7 +93,7 @@ class RadioMLDatasetSNR(Dataset):
     def fit_normalize(self, indices):
         """Compute mean/std from a subset of indices (training set only)."""
         subset    = self.X[indices]
-        self.mean = subset.mean(axis=(0, 2), keepdims=True)[0]   # (2,1)
+        self.mean = subset.mean(axis=(0, 2), keepdims=True)[0]
         self.std  = subset.std (axis=(0, 2), keepdims=True)[0]
         self.std  = np.where(self.std < 1e-8, 1.0, self.std)
         print(f"Normalization  mean={self.mean.ravel()}  "
@@ -127,10 +113,7 @@ def make_splits(dataset, snr_threshold, train=0.6, val=0.2):
     Split strategy
     ──────────────
     LOW-SNR pool   (SNR <= snr_threshold)
-      → 60% train  |  20% val  |  20% low-SNR test
-
-    HIGH-SNR pool  (SNR >  snr_threshold)
-      → kept entirely as a separate evaluation set
+    60% train  |  20% val  |  20% low-SNR test
 
     The test set used for the confusion matrix is the low-SNR 20%.
     The full-SNR evaluation combines low-SNR test + all high-SNR samples.
@@ -162,15 +145,12 @@ def make_splits(dataset, snr_threshold, train=0.6, val=0.2):
     print(f"High-SNR pool (SNR >  {snr_threshold} dB): {len(hi_idx):,} samples "
           f"(eval only)\n")
 
-    # fit normalization on TRAINING indices only
     dataset.fit_normalize(train_idx)
 
     return train_idx, val_idx, test_lo_idx, test_hi_idx
 
 
-# ─────────────────────────────────────────────
 # Model
-# ─────────────────────────────────────────────
 class RadioMLCNN(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
@@ -198,13 +178,11 @@ class RadioMLCNN(nn.Module):
         return self.classifier(self.features(x))
 
 
-# ─────────────────────────────────────────────
-# Train / eval helpers
-# ─────────────────────────────────────────────
+# Train and eval helpers
 def train_epoch(model, loader, criterion, optimizer):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
-    for X, y, _ in loader:                    # discard SNR during training
+    for X, y, _ in loader:                  
         X, y = X.to(DEVICE), y.to(DEVICE)
         optimizer.zero_grad()
         logits = model(X)
@@ -244,9 +222,7 @@ def run_inference(model, loader):
     return np.array(preds), np.array(labels), np.array(snrs)
 
 
-# ─────────────────────────────────────────────
 # Plots
-# ─────────────────────────────────────────────
 def plot_history(train_accs, val_accs, train_losses, val_losses):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     epochs = range(1, len(train_accs) + 1)
@@ -266,9 +242,6 @@ def plot_snr_accuracy(snr_values, snr_accs, class_names, snr_class_accs,
                       snr_threshold):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 11))
 
-    # ── overall curve ──
-    # blue = SEEN during training (SNR <= threshold)
-    # red  = UNSEEN during training (SNR >  threshold)
     colors = ["steelblue" if s <= snr_threshold else "tomato"
               for s in snr_values]
     bars = ax1.bar(snr_values, snr_accs, color=colors, width=1.6, edgecolor="white")
@@ -287,7 +260,6 @@ def plot_snr_accuracy(snr_values, snr_accs, class_names, snr_class_accs,
         ax1.text(snr, acc + 0.02, f"{acc:.2f}", ha="center",
                  fontsize=7, rotation=45)
 
-    # ── per-class heatmap ──
     mat = np.array([[snr_class_accs[snr][c] for snr in snr_values]
                     for c in range(len(class_names))])
     sns.heatmap(mat, annot=True, fmt=".2f",
@@ -337,15 +309,10 @@ def print_snr_table(snr_values, snr_accs, class_names, snr_class_accs,
         print(row + tag)
     print(sep)
 
-
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
 def main():
     if not os.path.exists(DATASET_PATH):
         raise FileNotFoundError(f"Dataset not found: {DATASET_PATH}")
 
-    # ── 1. Load & split ──────────────────────────────────────────────────────
     dataset = RadioMLDatasetSNR(DATASET_PATH)
     train_idx, val_idx, test_lo_idx, test_hi_idx = make_splits(
         dataset, SNR_THRESHOLD)
@@ -361,7 +328,7 @@ def main():
     full_eval_idx  = np.concatenate([test_lo_idx, test_hi_idx])
     full_loader    = make_loader(full_eval_idx, shuffle=False)
 
-    # ── 2. Model, loss, optimiser ────────────────────────────────────────────
+    # model & loss
     num_classes = len(dataset.class_names)
     model       = RadioMLCNN(num_classes).to(DEVICE)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}\n")
@@ -370,7 +337,7 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
-    # ── 3. Training loop ─────────────────────────────────────────────────────
+    # training loop
     best_val_acc = 0.0
     train_accs, val_accs, train_losses, val_losses = [], [], [], []
 
@@ -392,11 +359,11 @@ def main():
               f"train loss: {tr_loss:.4f}  acc: {tr_acc:.4f}  |  "
               f"val loss: {vl_loss:.4f}  acc: {vl_acc:.4f}{marker}")
 
-    # ── 4. Load best checkpoint ──────────────────────────────────────────────
+    # chooses best checkpoint
     print(f"\nLoading best checkpoint (val acc = {best_val_acc:.4f}) …")
     model.load_state_dict(torch.load(SAVE_PATH, map_location=DEVICE))
 
-    # ── 5. Low-SNR test evaluation ───────────────────────────────────────────
+    # low snr eval
     lo_preds, lo_labels, lo_snrs = run_inference(model, test_lo_loader)
     lo_acc = (lo_preds == lo_labels).mean()
     print(f"\nLow-SNR test accuracy (SNR <= {SNR_THRESHOLD} dB): {lo_acc:.4f}")
@@ -404,7 +371,7 @@ def main():
                    f"Confusion Matrix — Low-SNR Test Set (SNR ≤ {SNR_THRESHOLD} dB)",
                    "lowsnr_confusion.png")
 
-    # ── 6. Full-SNR evaluation ───────────────────────────────────────────────
+    # eval
     print("\nRunning full-SNR evaluation (all SNR levels) …")
     preds, labels, snrs = run_inference(model, full_loader)
 
@@ -431,7 +398,6 @@ def main():
     plot_snr_accuracy(snr_values, snr_accs, dataset.class_names,
                       snr_class_accs, SNR_THRESHOLD)
 
-    # ── 7. Overall classification report ────────────────────────────────────
     print("\nOverall Classification Report (all SNRs combined):")
     print(classification_report(labels, preds,
                                 target_names=dataset.class_names,

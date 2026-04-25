@@ -4,35 +4,21 @@ Transfer Learning: RML2016.10a → Panoradio HF
 Takes the RML-pretrained CNN feature extractor and fine-tunes it on the
 Panoradio HF dataset with a new 18-class output head.
 
-This script tests the central transfer learning question:
-  "Do the convolutional features learned on synthetic RML2016.10a signals
-   provide a useful starting point for classifying real-style HF signals?"
-
 Three experiments are run for comparison:
   1. SCRATCH      — randomly initialized model trained on Panoradio
-                    (baseline: how good can we get with no pre-training?)
   2. FROZEN       — RML conv layers frozen, only the new head trained
                     (tests whether RML features are directly useful)
   3. FINE-TUNED   — RML conv layers initialized then trained at low LR,
                     head trained at higher LR
-                    (the standard transfer learning recipe)
 
 Outputs:
-  - panoradio_finetune_<MODE>.pth         saved checkpoints
-  - panoradio_finetune_comparison.png     accuracy curves for all 3 runs
-  - panoradio_finetune_confusion_<MODE>.png  confusion matrix per mode
-  - Per-class F1 scores printed for each mode
-
-Key handling differences from eval_panoradio.py:
-  - Panoradio signals are RESAMPLED (not truncated) to match RML's 128-sample
-    vector length, preserving the signal structure across the segment.
-  - Each Panoradio segment is independently normalized (zero-mean, unit-var),
-    so the model sees consistent input scale regardless of source dataset.
+  - panoradio_finetune_<MODE>.pth
+  - panoradio_finetune_comparison.png
+  - panoradio_finetune_confusion_<MODE>.png
 
 Usage:
-  python3 finetune_panoradio.py                        # run all 3 experiments
+  python3 finetune_panoradio.py
   python3 finetune_panoradio.py --mode finetune        # just fine-tuning
-  python3 finetune_panoradio.py --epochs 15 --subset 30000   # quick test
 """
 
 import os
@@ -50,9 +36,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ─────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────
 parser = argparse.ArgumentParser()
 parser.add_argument("--npy",        default="dataset_panoradio_hf.npy")
 parser.add_argument("--csv",        default="dataset_panoradio_hf_tags.csv")
@@ -68,8 +51,8 @@ args = parser.parse_args()
 
 DEVICE        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RANDOM_SEED   = 42
-RML_SAMPLE_LEN = 128       # target length to match RML model input
-PANORADIO_LEN  = 2048      # native Panoradio sample length
+RML_SAMPLE_LEN = 128
+PANORADIO_LEN  = 2048
 
 torch.manual_seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
@@ -77,17 +60,11 @@ np.random.seed(RANDOM_SEED)
 print(f"Device: {DEVICE}  |  Mode: {args.mode}  |  Epochs: {args.epochs}\n")
 
 
-# ─────────────────────────────────────────────
-# Dataset
-# ─────────────────────────────────────────────
+# dataset
 class PanoradioDataset(Dataset):
     """
-    Panoradio HF dataset, prepared for the RML-shaped CNN.
-
     Steps applied per sample:
-      1. Resample 2048 complex points → 128 complex points (preserves structure
-         far better than truncation; uses scipy.signal.resample which performs
-         FFT-based polyphase resampling)
+      1. Resample 2048 complex points to 128 complex points
       2. Split into (2, 128) real/imag channels
       3. Per-sample standardization (zero-mean, unit-variance per channel)
 
@@ -113,17 +90,15 @@ class PanoradioDataset(Dataset):
         self.num_classes   = len(unique_modes)
         print(f"  {self.num_classes} classes: {unique_modes}")
 
-        # Optional subsetting for fast iteration / debugging
         if subset > 0 and subset < N:
             rng = np.random.default_rng(RANDOM_SEED)
             sel = rng.choice(N, subset, replace=False)
-            sel.sort()                 # mmap likes ascending access
+            sel.sort()
             print(f"  Subsetting to {subset:,} random samples")
         else:
             sel = np.arange(N)
 
-        # Pre-resample everything in chunks to avoid loading 5GB at once.
-        # Output: (selected_N, 2, 128) float32
+        # pre sampling
         chunk = 2048
         out   = np.zeros((len(sel), 2, RML_SAMPLE_LEN), dtype=np.float32)
         print(f"  Resampling 2048 → {RML_SAMPLE_LEN} samples per signal "
@@ -131,7 +106,7 @@ class PanoradioDataset(Dataset):
         for start in range(0, len(sel), chunk):
             end       = min(start + chunk, len(sel))
             batch_idx = sel[start:end]
-            batch     = np.array(raw[batch_idx])     # forces mmap → mem
+            batch     = np.array(raw[batch_idx])
             # FFT-resample each row to 128 complex samples
             resampled = resample(batch, RML_SAMPLE_LEN, axis=1)
             out[start:end, 0] = resampled.real.astype(np.float32)
@@ -141,7 +116,6 @@ class PanoradioDataset(Dataset):
                 print(f"    progress: {pct:5.1f}%", end="\r", flush=True)
         print(f"    progress: 100.0%")
 
-        # Per-sample normalization (per-channel zero-mean unit-variance)
         mean = out.mean(axis=2, keepdims=True)
         std  = out.std (axis=2, keepdims=True)
         std  = np.where(std < 1e-8, 1.0, std)
@@ -171,9 +145,7 @@ def split_indices(n, train=0.6, val=0.2, seed=42):
     return idx[:n_train], idx[n_train:n_train + n_val], idx[n_train + n_val:]
 
 
-# ─────────────────────────────────────────────
-# Model — same architecture as RML, swappable head
-# ─────────────────────────────────────────────
+# model
 class RadioMLCNN(nn.Module):
     """
     Same architecture as train_radioml.py, but the classifier head's final
@@ -223,7 +195,7 @@ def build_model(mode: str, num_classes: int, rml_checkpoint: str):
         param_groups = [{"params": model.parameters(), "lr": 5e-4}]
         return model, param_groups
 
-    # Load RML weights, but skip the final layer (different num_classes)
+    # Load RML weights
     print(f"  Loading RML weights from {rml_checkpoint}")
     rml_state = torch.load(rml_checkpoint, map_location=DEVICE)
 
@@ -249,16 +221,14 @@ def build_model(mode: str, num_classes: int, rml_checkpoint: str):
     elif mode == "finetune":
         print("  Mode: FINE-TUNE  (conv layers trained at low LR, head at high LR)")
         param_groups = [
-            {"params": model.features.parameters(),   "lr": 5e-5},  # 10x lower
+            {"params": model.features.parameters(),   "lr": 5e-5},
             {"params": model.classifier.parameters(), "lr": 5e-4},
         ]
 
     return model, param_groups
 
 
-# ─────────────────────────────────────────────
-# Training / eval helpers
-# ─────────────────────────────────────────────
+# train
 def train_epoch(model, loader, criterion, optimizer):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
@@ -274,7 +244,6 @@ def train_epoch(model, loader, criterion, optimizer):
         total      += len(y)
     return total_loss / total, correct / total
 
-
 @torch.no_grad()
 def evaluate(model, loader, criterion):
     model.eval()
@@ -288,7 +257,6 @@ def evaluate(model, loader, criterion):
         total      += len(y)
     return total_loss / total, correct / total
 
-
 @torch.no_grad()
 def gather_predictions(model, loader):
     model.eval()
@@ -301,9 +269,7 @@ def gather_predictions(model, loader):
     return np.array(preds), np.array(labels), np.array(snrs)
 
 
-# ─────────────────────────────────────────────
-# Plot helpers
-# ─────────────────────────────────────────────
+# plot
 def plot_comparison(histories):
     """histories = {mode_name: {"train_acc": [...], "val_acc": [...]}}"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -325,7 +291,6 @@ def plot_comparison(histories):
     plt.savefig("panoradio_finetune_comparison.png", dpi=150)
     print("Saved panoradio_finetune_comparison.png")
 
-
 def plot_confusion(preds, labels, class_names, title, fname):
     cm      = confusion_matrix(labels, preds, labels=list(range(len(class_names))))
     cm_norm = cm.astype(float) / np.maximum(cm.sum(axis=1, keepdims=True), 1)
@@ -339,7 +304,6 @@ def plot_confusion(preds, labels, class_names, title, fname):
     plt.tight_layout()
     plt.savefig(fname, dpi=150)
     print(f"Saved {fname}")
-
 
 def plot_snr_curves(snr_results):
     """snr_results = {mode: {snr: accuracy}}"""
@@ -357,10 +321,6 @@ def plot_snr_curves(snr_results):
     plt.savefig("panoradio_finetune_snr_curves.png", dpi=150)
     print("Saved panoradio_finetune_snr_curves.png")
 
-
-# ─────────────────────────────────────────────
-# Run a single training experiment
-# ─────────────────────────────────────────────
 def run_experiment(mode: str, dataset, train_loader, val_loader, test_loader):
     print(f"\n{'═' * 70}")
     print(f"  EXPERIMENT: {mode.upper()}")
@@ -402,8 +362,6 @@ def run_experiment(mode: str, dataset, train_loader, val_loader, test_loader):
     model.load_state_dict(torch.load(save_path, map_location=DEVICE))
     te_loss, te_acc = evaluate(model, test_loader, criterion)
     print(f"  Test loss: {te_loss:.4f}  |  Test accuracy: {te_acc:.4f}")
-
-    # Detailed analysis
     preds, labels, snrs = gather_predictions(model, test_loader)
     plot_confusion(preds, labels, dataset.class_names,
                    f"Confusion Matrix — {mode.upper()} (test acc = {te_acc:.3f})",
@@ -440,7 +398,6 @@ def main():
             f"RML checkpoint not found: {args.checkpoint}\n"
             "Run train_radioml.py first to generate it.")
 
-    # Load and prepare dataset
     dataset = PanoradioDataset(args.npy, args.csv, subset=args.subset)
     train_idx, val_idx, test_idx = split_indices(len(dataset), seed=RANDOM_SEED)
     print(f"\nSplit → train: {len(train_idx):,}  val: {len(val_idx):,}  "
@@ -480,7 +437,6 @@ def main():
         for mode, acc in test_accs.items():
             print(f"  {mode:<12}  test accuracy: {acc:.4f}")
 
-        # Compare scratch vs finetune to quantify transfer learning benefit
         if "scratch" in test_accs and "finetune" in test_accs:
             delta = test_accs["finetune"] - test_accs["scratch"]
             sign  = "+" if delta >= 0 else ""
